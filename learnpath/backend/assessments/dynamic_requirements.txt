@@ -1,0 +1,20 @@
+"""
+Dynamic Resource Fetcher - Requirements
+Install these packages to enable dynamic resource fetching
+"""
+
+# Web scraping
+beautifulsoup4==4.12.2
+requests==2.31.0
+
+# Optional: For JavaScript-heavy pages
+playwright==1.40.0
+
+# LLM / API interactions
+ollama==0.1.22
+
+# Environment variables
+python-decouple==3.8
+
+# Data processing
+pandas==2.1.4

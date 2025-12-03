@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LearnPath - AI Personalized Learning Platform</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/responsive.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <!-- Navigation Bar -->
+    <nav class="navbar">
+        <div class="navbar-container">
+            <div class="navbar-brand">
+                <h1><i class="fas fa-graduation-cap"></i> LearnPath</h1>
+            </div>
+            <ul class="nav-links" id="navLinks">
+                <li><a href="#home">Home</a></li>
+                <li><a href="#courses">Courses</a></li>
+                <li><a href="#dashboard">Dashboard</a></li>
+                <li><a href="#profile">Profile</a></li>
+                <li><a href="#" onclick="logout()">Logout</a></li>
+            </ul>
+            <div class="hamburger" id="hamburger">
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Container -->
+    <div class="container">
+        <!-- Login Page -->
+        <div id="loginPage" class="page active">
+            <div class="login-container">
+                <div class="login-box">
+                    <h2>Welcome to LearnPath</h2>
+                    <p>AI-Powered Personalized Learning Platform</p>
+                    
+                    <div class="tabs">
+                        <button class="tab-btn active" onclick="switchTab('login-form')">Login</button>
+                        <button class="tab-btn" onclick="switchTab('register-form')">Register</button>
+                    </div>
+
+                    <!-- Login Form -->
+                    <form id="login-form" class="auth-form active">
+                        <div class="form-group">
+                            <label>Email</label>
+                            <input type="email" id="loginEmail" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Password</label>
+                            <input type="password" id="loginPassword" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Login</button>
+                        <p class="error-msg" id="loginError"></p>
+                    </form>
+
+                    <!-- Register Form -->
+                    <form id="register-form" class="auth-form">
+                        <div class="form-group">
+                            <label>Email</label>
+                            <input type="email" id="registerEmail" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Username</label>
+                            <input type="text" id="registerUsername" required>
+                        </div>
+                        <div class="form-group">
+                            <label>First Name</label>
+                            <input type="text" id="registerFirstName">
+                        </div>
+                        <div class="form-group">
+                            <label>Last Name</label>
+                            <input type="text" id="registerLastName">
+                        </div>
+                        <div class="form-group">
+                            <label>Password</label>
+                            <input type="password" id="registerPassword" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Confirm Password</label>
+                            <input type="password" id="registerPassword2" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Register</button>
+                        <p class="error-msg" id="registerError"></p>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Home Page -->
+        <div id="homePage" class="page">
+            <section class="hero">
+                <div class="hero-content">
+                    <h1>Welcome to LearnPath</h1>
+                    <p>Your AI-powered learning companion</p>
+                    <button class="btn btn-primary btn-lg" onclick="goToPage('coursesPage')">Start Learning</button>
+                </div>
+            </section>
+        </div>
+
+        <!-- Courses Page -->
+        <div id="coursesPage" class="page">
+            <div class="page-header">
+                <h2>Available Courses</h2>
+                <p>Choose a course to begin your personalized learning journey</p>
+            </div>
+            
+            <div class="courses-container" id="coursesContainer">
+                <!-- Courses will be loaded here -->
+            </div>
+        </div>
+
+        <!-- Assessment Page -->
+        <div id="assessmentPage" class="page">
+            <div class="page-header">
+                <h2>Initial Assessment</h2>
+                <p>Answer these questions to determine your current skill level</p>
+            </div>
+            
+            <div class="assessment-container">
+                <div class="assessment-progress">
+                    <div class="progress-bar">
+                        <div id="progressFill" class="progress-fill"></div>
+                    </div>
+                    <p id="questionNumber"></p>
+                </div>
+
+                <div id="questionsContainer" class="questions-container">
+                    <!-- Questions will be loaded here -->
+                </div>
+
+                <div class="assessment-actions">
+                    <button class="btn btn-secondary" onclick="goToPage('coursesPage')">Back</button>
+                    <button class="btn btn-primary" id="submitAssessment">Submit Assessment</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Results Page -->
+        <div id="resultsPage" class="page">
+            <div class="page-header">
+                <h2>Assessment Results</h2>
+            </div>
+            
+            <div class="results-container">
+                <div class="score-card">
+                    <div class="score-display">
+                        <div class="score-circle">
+                            <span id="scorePercentage">0%</span>
+                        </div>
+                    </div>
+                    <div class="score-info">
+                        <h3 id="skillLevel">Skill Level</h3>
+                        <p id="scoreText">Your Score</p>
+                    </div>
+                </div>
+
+                <div class="roadmap-duration">
+                    <label>How much time can you dedicate to learning? (weeks)</label>
+                    <input type="number" id="durationWeeks" min="4" max="52" value="12">
+                </div>
+
+                <div class="results-actions">
+                    <button class="btn btn-secondary" onclick="goToPage('coursesPage')">Choose Another Course</button>
+                    <button class="btn btn-primary" id="generateRoadmap">Generate Your Roadmap</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Learning Path Page -->
+        <div id="learningPage" class="page">
+            <div class="learning-layout">
+                <!-- Sidebar with chapters -->
+                <aside class="learning-sidebar">
+                    <div class="course-info">
+                        <h3 id="courseTitleLearning">Course Title</h3>
+                        <p id="skillLevelLearning">Skill Level</p>
+                    </div>
+                    <div class="chapters-list" id="chaptersList">
+                        <!-- Chapters will be loaded here -->
+                    </div>
+                </aside>
+
+                <!-- Main content area -->
+                <main class="learning-main">
+                    <div id="chapterContent" class="chapter-content">
+                        <!-- Chapter content will be loaded here -->
+                    </div>
+                </main>
+            </div>
+        </div>
+
+        <!-- Dashboard Page -->
+        <div id="dashboardPage" class="page">
+            <div class="page-header">
+                <h2>Your Learning Dashboard</h2>
+            </div>
+
+            <div class="dashboard-grid">
+                <!-- Progress Card -->
+                <div class="dashboard-card">
+                    <h3>Overall Progress</h3>
+                    <div class="progress-stat">
+                        <div class="stat-circle">
+                            <span id="progressPercent">0%</span>
+                        </div>
+                        <p id="progressText">Chapters Completed</p>
+                    </div>
+                </div>
+
+                <!-- Time Tracking Card -->
+                <div class="dashboard-card">
+                    <h3>Time Tracking</h3>
+                    <div class="stat-item">
+                        <p>Total Hours</p>
+                        <h4 id="totalHours">0 hrs</h4>
+                    </div>
+                    <div class="stat-item">
+                        <p>This Week</p>
+                        <h4 id="weekHours">0 hrs</h4>
+                    </div>
+                </div>
+
+                <!-- Performance Card -->
+                <div class="dashboard-card">
+                    <h3>Performance</h3>
+                    <div class="stat-item">
+                        <p>Average Test Score</p>
+                        <h4 id="avgScore">0%</h4>
+                    </div>
+                </div>
+
+                <!-- Weak Areas Card -->
+                <div class="dashboard-card">
+                    <h3>Areas to Focus On</h3>
+                    <div id="weakAreasList">
+                        <!-- Weak areas will be loaded here -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent Activity -->
+            <div class="recent-activity">
+                <h3>Recent Activity</h3>
+                <div id="activityList" class="activity-list">
+                    <!-- Activities will be loaded here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Profile Page -->
+        <div id="profilePage" class="page">
+            <div class="page-header">
+                <h2>User Profile</h2>
+            </div>
+
+            <div class="profile-container">
+                <div class="profile-card">
+                    <h3>Profile Information</h3>
+                    <div class="form-group">
+                        <label>Email</label>
+                        <input type="email" id="profileEmail" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label>Username</label>
+                        <input type="text" id="profileUsername" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label>Learning Duration Preference (weeks)</label>
+                        <input type="number" id="profileDuration" min="1" max="52">
+                    </div>
+                    <button class="btn btn-primary" onclick="updateProfile()">Update Profile</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for Chapter Test -->
+    <div id="testModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeTestModal()">&times;</span>
+            <h2>Chapter Test</h2>
+            <div id="testQuestionsContainer">
+                <!-- Test questions will be loaded here -->
+            </div>
+            <button class="btn btn-primary" id="submitTest">Submit Test</button>
+        </div>
+    </div>
+
+    <script src="js/app.js"></script>
+    <script src="js/api.js"></script>
+</body>
+</html>

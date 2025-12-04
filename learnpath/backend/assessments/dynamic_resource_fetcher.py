@@ -19,6 +19,9 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# Django model fallback will be imported lazily inside methods to avoid
+# import-time dependency issues when running scripts outside Django context.
+
 
 class DynamicResourceFetcher:
     """Fetch resources dynamically from internet sources"""
@@ -133,50 +136,80 @@ class DynamicResourceFetcher:
     
     def search_youtube_videos(self, topic: str, max_results: int = 5) -> List[Dict]:
         """
-        Search for YouTube videos using YouTube Data API
-        
+        Search for YouTube videos using YouTube Data API with enhanced validation
+        Falls back to web scraping if API key not configured or API fails
+
         Args:
             topic: Video topic to search
             max_results: Maximum videos to return
-        
+
         Returns:
-            List of video results with metadata
+            List of validated video results with metadata
         """
         if not self.youtube_api_key:
-            logger.warning("YouTube API key not configured. Using Serper fallback.")
+            logger.warning("YouTube API key not configured. Using web scrape fallback.")
             return self._fallback_youtube_search(topic, max_results)
-        
+
         try:
             self._rate_limit()
-            
+
             url = "https://www.googleapis.com/youtube/v3/search"
             params = {
                 "q": f"{topic} tutorial course",
                 "part": "snippet",
                 "type": "video",
-                "maxResults": max_results,
+                "maxResults": max_results * 2,  # Get more to account for filtering
                 "order": "relevance",
                 "relevanceLanguage": "en",
                 "key": self.youtube_api_key
             }
-            
+
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
-            
+
             results = response.json()
+
+            # Check for API errors in response
+            if "error" in results:
+                logger.error(f"YouTube API error: {results['error']}")
+                return self._fallback_youtube_search(topic, max_results)
+
             videos = []
-            
+
             # Extract video IDs for getting statistics
             video_ids = [item["id"]["videoId"] for item in results.get("items", [])]
             video_stats = self._get_youtube_stats(video_ids) if video_ids else {}
-            
+
             for item in results.get("items", []):
                 video_id = item["id"]["videoId"]
+
+                # Validate video ID format
+                if not re.match(r'^[a-zA-Z0-9_-]{11}$', video_id):
+                    logger.warning(f"Skipping invalid video ID: {video_id}")
+                    continue
+
                 stats = video_stats.get(video_id, {})
-                
+
+                # Skip videos with no view count (likely private/unavailable)
+                if stats.get("viewCount", 0) == 0:
+                    logger.info(f"Skipping video {video_id} - no view count (possibly unavailable)")
+                    continue
+
+                # Validate video availability by checking if we can get stats
+                if not stats:
+                    logger.info(f"Skipping video {video_id} - no stats available")
+                    continue
+
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+                # Additional validation: check if video is embeddable (public)
+                if not self._validate_video_availability(video_id):
+                    logger.info(f"Skipping video {video_id} - not publicly available")
+                    continue
+
                 videos.append({
-                    "title": item["snippet"]["title"],
-                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "title": item["snippet"]["title"][:200],
+                    "url": video_url,
                     "channel": item["snippet"]["channelTitle"],
                     "description": item["snippet"]["description"][:200],
                     "thumbnail": item["snippet"]["thumbnails"]["high"]["url"],
@@ -185,36 +218,86 @@ class DynamicResourceFetcher:
                     "like_count": stats.get("likeCount", 0),
                     "comment_count": stats.get("commentCount", 0),
                     "duration": stats.get("duration", "Unknown"),
-                    "relevance_score": self._calculate_video_relevance(topic, item, stats)
+                    "relevance_score": self._calculate_video_relevance(topic, item, stats),
+                    "source": "youtube_api"
                 })
-            
-            # Sort by relevance score
+
+            if not videos:
+                logger.warning(f"YouTube API returned no valid results for '{topic}'. Using fallback.")
+                return self._fallback_youtube_search(topic, max_results)
+
+            # Sort by relevance score and take top results
             videos.sort(key=lambda x: x["relevance_score"], reverse=True)
-            logger.info(f"Found {len(videos)} YouTube videos for '{topic}'")
-            return videos
-            
+            final_videos = videos[:max_results]
+            logger.info(f"Found {len(final_videos)} validated YouTube videos for '{topic}' via API")
+            return final_videos
+
         except requests.exceptions.RequestException as e:
-            logger.error(f"YouTube API request failed: {str(e)}")
+            logger.error(f"YouTube API request failed: {str(e)}. Using fallback.")
+            return self._fallback_youtube_search(topic, max_results)
+        except (KeyError, ValueError) as e:
+            logger.error(f"Error parsing YouTube API response: {str(e)}. Using fallback.")
             return self._fallback_youtube_search(topic, max_results)
     
+    def _validate_video_availability(self, video_id: str) -> bool:
+        """
+        Validate if a YouTube video is publicly available and embeddable
+
+        Args:
+            video_id: YouTube video ID to validate
+
+        Returns:
+            True if video is available, False otherwise
+        """
+        if not self.youtube_api_key:
+            return True  # Skip validation if no API key
+
+        try:
+            self._rate_limit()
+
+            url = "https://www.googleapis.com/youtube/v3/videos"
+            params = {
+                "id": video_id,
+                "part": "status",
+                "key": self.youtube_api_key
+            }
+
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+
+            items = response.json().get("items", [])
+            if not items:
+                return False
+
+            status = items[0].get("status", {})
+            privacy_status = status.get("privacyStatus", "private")
+            embeddable = status.get("embeddable", False)
+
+            # Video must be public and embeddable
+            return privacy_status == "public" and embeddable
+
+        except Exception as e:
+            logger.warning(f"Failed to validate video {video_id}: {str(e)}")
+            return False
+
     def _get_youtube_stats(self, video_ids: List[str]) -> Dict:
         """Get video statistics (views, likes, duration)"""
         if not self.youtube_api_key or not video_ids:
             return {}
-        
+
         try:
             self._rate_limit()
-            
+
             url = "https://www.googleapis.com/youtube/v3/videos"
             params = {
                 "id": ",".join(video_ids),
                 "part": "statistics,contentDetails",
                 "key": self.youtube_api_key
             }
-            
+
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
-            
+
             stats = {}
             for item in response.json().get("items", []):
                 video_id = item["id"]
@@ -230,7 +313,7 @@ class DynamicResourceFetcher:
             return {}
     
     def _fallback_youtube_search(self, topic: str, max_results: int = 5) -> List[Dict]:
-        """Fallback YouTube search using web scraping"""
+        """Fallback YouTube search using web scraping with improved video ID extraction"""
         try:
             self._rate_limit()
             
@@ -238,24 +321,70 @@ class DynamicResourceFetcher:
             response = self.session.get(search_url, timeout=10)
             response.raise_for_status()
             
-            # Extract video data from initial data
-            pattern = r'"videoId":"([^"]+)".*?"title":{"simpleText":"([^"]+)"}'
-            matches = re.findall(pattern, response.text)
-            
             videos = []
-            for video_id, title in matches[:max_results]:
+            
+            # Try multiple regex patterns to extract video IDs (more robust)
+            patterns = [
+                r'"videoId":"([a-zA-Z0-9_-]{11})"',  # Standard video ID format
+                r'data-video-id="([a-zA-Z0-9_-]{11})"',
+                r'href="/watch\?v=([a-zA-Z0-9_-]{11})"'
+            ]
+            
+            video_ids_found = set()
+            for pattern in patterns:
+                matches = re.findall(pattern, response.text)
+                video_ids_found.update(matches)
+                if len(video_ids_found) >= max_results:
+                    break
+            
+            # Extract titles and build video objects
+            # Look for titles paired with video IDs
+            title_pattern = r'"title":{"simpleText":"([^"]+)"}'
+            titles = re.findall(title_pattern, response.text)
+            
+            for i, video_id in enumerate(list(video_ids_found)[:max_results]):
+                # Validate video ID format (must be exactly 11 characters, alphanumeric + _ -)
+                if not re.match(r'^[a-zA-Z0-9_-]{11}$', video_id):
+                    logger.warning(f"Skipping invalid video ID: {video_id}")
+                    continue
+                
+                title = titles[i] if i < len(titles) else f"Video: {topic}"
+                
                 videos.append({
-                    "title": title,
+                    "title": title[:100],  # Truncate long titles
                     "url": f"https://www.youtube.com/watch?v={video_id}",
                     "channel": "Unknown",
-                    "description": "Fetched via YouTube fallback",
-                    "relevance_score": 0.5
+                    "description": f"Search result for {topic}",
+                    "relevance_score": 0.5,
+                    "source": "fallback_scrape"
                 })
             
+            if not videos:
+                logger.warning(f"No valid videos found via fallback scrape for '{topic}'")
+                # Return a generic placeholder
+                return [{
+                    "title": f"YouTube search: {topic}",
+                    "url": f"https://www.youtube.com/results?search_query={topic.replace(' ', '+')}",
+                    "channel": "YouTube Search",
+                    "description": f"Direct search results for {topic} on YouTube",
+                    "relevance_score": 0.3,
+                    "source": "youtube_search_redirect"
+                }]
+            
+            logger.info(f"Fallback scrape found {len(videos)} videos for '{topic}'")
             return videos
+            
         except Exception as e:
             logger.error(f"YouTube fallback search failed: {str(e)}")
-            return []
+            # Return search redirect as last resort
+            return [{
+                "title": f"YouTube search: {topic}",
+                "url": f"https://www.youtube.com/results?search_query={topic.replace(' ', '+')}",
+                "channel": "YouTube Search",
+                "description": f"Direct search results for {topic} on YouTube",
+                "relevance_score": 0.2,
+                "source": "youtube_search_redirect"
+            }]
     
     def _calculate_video_relevance(self, topic: str, video_item: Dict, stats: Dict) -> float:
         """
@@ -506,20 +635,66 @@ class DynamicResourceFetcher:
         """Simple fallback summary using sentence extraction"""
         sentences = text.split('.')
         return '. '.join(sentences[:max_sentences]).strip() + "."
+
+    def _db_fallback_roadmap(self, topic: str, skill_level: str = "beginner") -> Optional[Dict]:
+        """
+        Attempt to load a stored Roadmap from the database that matches the
+        requested topic. This method is tolerant — it will inspect recent
+        Roadmap entries and try to match the `topic` field inside the
+        `roadmap_data` JSON or the related course title.
+        Returns a roadmap dict compatible with `get_complete_roadmap` or
+        `None` when no suitable fallback is found.
+        """
+        try:
+            # Import models lazily so this module can be imported outside Django
+            from .models import Roadmap
+
+            # Get recent roadmaps to inspect
+            recent = Roadmap.objects.all().order_by('-updated_at')[:50]
+
+            topic_low = (topic or '').strip().lower()
+
+            for rm in recent:
+                data = rm.roadmap_data or {}
+                # Match by explicit 'topic' in saved data
+                saved_topic = (data.get('topic') or '').strip().lower()
+                course_title = (rm.course.title or '').strip().lower() if hasattr(rm, 'course') else ''
+
+                if topic_low and (topic_low in saved_topic or topic_low in course_title):
+                    # Build a minimal roadmap shape
+                    return {
+                        'topic': data.get('topic', topic),
+                        'skill_level': rm.skill_level or skill_level,
+                        'generated_at': rm.updated_at.isoformat(),
+                        'videos': data.get('videos', []),
+                        'documentation': data.get('documentation', []),
+                        'blogs': data.get('blogs', []),
+                        'tools': data.get('tools', []),
+                        'related_topics': data.get('related_topics', []),
+                        'summary': data.get('summary', ''),
+                        'estimated_hours': data.get('estimated_hours', 0),
+                        'source': 'db_fallback'
+                    }
+
+            return None
+        except Exception as e:
+            logger.warning(f"Exception while attempting DB fallback: {e}")
+            return None
     
     def get_complete_roadmap(self, topic: str, skill_level: str = "beginner") -> Dict:
         """
-        Complete pipeline: Search → Scrape → Rank → Summarize → Return
-        
+        Dynamic pipeline: Adaptive Search → Scrape → Rank → Summarize → Return
+        Adapts search strategy based on resource availability
+
         Args:
             topic: Learning topic
             skill_level: "beginner", "intermediate", "advanced"
-        
+
         Returns:
             Complete learning roadmap with all resources
         """
-        logger.info(f"Generating roadmap for '{topic}' ({skill_level})")
-        
+        logger.info(f"Generating dynamic roadmap for '{topic}' ({skill_level})")
+
         try:
             roadmap = {
                 "topic": topic,
@@ -534,27 +709,37 @@ class DynamicResourceFetcher:
                 "estimated_hours": 0,
                 "errors": []
             }
-            
-            # Step 1: Search for videos
+
+            # Dynamic search strategy based on resource availability
+            search_strategy = self._determine_search_strategy(topic)
+
+            # Step 1: Search for videos with adaptive fallback
             logger.info("Step 1: Searching for videos...")
-            videos = self.search_youtube_videos(topic, max_results=5)
+            videos = self.search_youtube_videos(topic, max_results=search_strategy["video_limit"])
             roadmap["videos"] = videos[:3]
-            
-            # Step 2: Search for documentation
+
+            # If limited videos found, expand search to related topics
+            if len(videos) < 2:
+                logger.info("Limited videos found, searching related topics...")
+                related_videos = self._search_related_topic_videos(topic, max_results=3)
+                roadmap["videos"].extend(related_videos[:2])
+
+            # Step 2: Search for documentation with increased limit if videos are limited
             logger.info("Step 2: Searching for documentation...")
+            docs_limit = search_strategy["docs_limit"]
             docs_search = self.search_resources(topic, search_type="documentation")
-            
+
             if "organic_results" in docs_search:
-                for result in docs_search["organic_results"][:3]:
+                for result in docs_search["organic_results"][:docs_limit]:
                     # Scrape each documentation page
                     scraped = self.scrape_website(result["url"])
-                    
+
                     if "error" not in scraped:
                         doc_summary = self.summarize_with_ollama(
                             '\n'.join(scraped.get("paragraphs", [])[:3]),
                             prompt_type="summary"
                         )
-                        
+
                         roadmap["documentation"].append({
                             "title": result["title"],
                             "url": result["url"],
@@ -562,85 +747,248 @@ class DynamicResourceFetcher:
                             "summary": doc_summary,
                             "domain": result["domain"]
                         })
-            
-            # Step 3: Search for blogs/articles
-            logger.info("Step 3: Searching for blogs...")
+
+            # Step 3: Search for blogs/articles with adaptive limits
+            logger.info("Step 3: Searching for blogs and articles...")
+            blog_limit = search_strategy["blog_limit"]
             blog_search = self.search_resources(topic, search_type="general")
-            
+
             if "organic_results" in blog_search:
-                blogs = blog_search["organic_results"][3:6]  # Get different results
-                
-                for result in blogs[:2]:
+                # Get different results from docs search
+                blogs = blog_search["organic_results"][len(roadmap["documentation"]):len(roadmap["documentation"])+blog_limit]
+
+                for result in blogs:
                     scraped = self.scrape_website(result["url"])
-                    
+
                     if "error" not in scraped:
                         blog_summary = self.summarize_with_ollama(
                             '\n'.join(scraped.get("paragraphs", [])[:2]),
                             prompt_type="key_points"
                         )
-                        
+
                         roadmap["blogs"].append({
                             "title": result["title"],
                             "url": result["url"],
                             "summary": blog_summary,
                             "domain": result["domain"]
                         })
-            
-            # Step 4: Extract related topics from People Also Ask
-            logger.info("Step 4: Extracting related topics...")
+
+            # Step 4: If still limited resources, search for additional content types
+            if len(roadmap["videos"]) + len(roadmap["documentation"]) + len(roadmap["blogs"]) < 5:
+                logger.info("Limited resources found, expanding search...")
+                additional_resources = self._search_additional_resources(topic)
+                roadmap["blogs"].extend(additional_resources)
+
+            # Step 5: Extract related topics from People Also Ask
+            logger.info("Step 5: Extracting related topics...")
             if "people_also_ask" in blog_search:
                 roadmap["related_topics"] = [
                     qa["question"] for qa in blog_search.get("people_also_ask", [])[:5]
                 ]
-            
-            # Step 5: Generate overall summary
-            logger.info("Step 5: Generating summary...")
+
+            # Step 6: Generate overall summary
+            logger.info("Step 6: Generating summary...")
             content_for_summary = '\n'.join([
                 doc.get("summary", "") for doc in roadmap["documentation"][:2]
             ])
-            
+
             if content_for_summary:
                 roadmap["summary"] = self.summarize_with_ollama(
                     content_for_summary,
                     prompt_type="explanation"
                 )
-            
-            # Step 6: Estimate learning hours
+            else:
+                # Fallback summary from available content
+                all_content = []
+                for video in roadmap["videos"][:2]:
+                    all_content.append(video.get("description", ""))
+                for blog in roadmap["blogs"][:2]:
+                    all_content.append(blog.get("summary", ""))
+
+                if all_content:
+                    roadmap["summary"] = self.summarize_with_ollama(
+                        '\n'.join(all_content),
+                        prompt_type="explanation"
+                    )
+
+            # Step 7: Estimate learning hours
             roadmap["estimated_hours"] = self._estimate_learning_hours(
                 len(roadmap["videos"]),
                 len(roadmap["documentation"]),
                 len(roadmap["blogs"]),
                 skill_level
             )
-            
-            logger.info(f"Successfully generated roadmap for '{topic}'")
+
+            logger.info(f"Successfully generated dynamic roadmap for '{topic}' with {len(roadmap['videos'])} videos, {len(roadmap['documentation'])} docs, {len(roadmap['blogs'])} blogs")
             return roadmap
-            
+
         except Exception as e:
             logger.error(f"Failed to generate roadmap: {str(e)}")
+            # Try to fall back to a saved roadmap in the database (if available)
+            try:
+                fallback = self._db_fallback_roadmap(topic, skill_level)
+                if fallback:
+                    logger.info(f"Returning DB fallback roadmap for '{topic}'")
+                    return fallback
+            except Exception as fb_err:
+                logger.warning(f"DB fallback failed: {fb_err}")
+
             return {
                 "error": str(e),
                 "topic": topic,
                 "generated_at": datetime.now().isoformat()
             }
     
+    def _determine_search_strategy(self, topic: str) -> Dict:
+        """
+        Determine adaptive search strategy based on topic characteristics
+
+        Args:
+            topic: Learning topic
+
+        Returns:
+            Dictionary with search limits for different resource types
+        """
+        # Default strategy
+        strategy = {
+            "video_limit": 5,
+            "docs_limit": 3,
+            "blog_limit": 3
+        }
+
+        # Adjust based on topic popularity/complexity
+        topic_lower = topic.lower()
+
+        # For popular topics, increase video search
+        popular_topics = ["python", "javascript", "react", "machine learning", "data science"]
+        if any(pt in topic_lower for pt in popular_topics):
+            strategy["video_limit"] = 8
+            strategy["blog_limit"] = 5
+
+        # For niche/advanced topics, focus more on documentation
+        niche_topics = ["quantum", "blockchain", "cryptography", "advanced"]
+        if any(nt in topic_lower for nt in niche_topics):
+            strategy["docs_limit"] = 5
+            strategy["video_limit"] = 3
+
+        # For beginner topics, prioritize tutorials
+        beginner_indicators = ["basics", "introduction", "beginner", "fundamentals"]
+        if any(bi in topic_lower for bi in beginner_indicators):
+            strategy["video_limit"] = 7
+            strategy["blog_limit"] = 4
+
+        return strategy
+
+    def _search_related_topic_videos(self, topic: str, max_results: int = 3) -> List[Dict]:
+        """
+        Search for videos on related topics when primary topic has limited results
+
+        Args:
+            topic: Original topic
+            max_results: Maximum related videos to return
+
+        Returns:
+            List of related topic videos
+        """
+        try:
+            # Generate related search terms
+            related_queries = [
+                f"{topic} tutorial",
+                f"learn {topic}",
+                f"{topic} course",
+                f"{topic} basics",
+                f"{topic} guide"
+            ]
+
+            all_videos = []
+            for query in related_queries[:2]:  # Limit to 2 related queries
+                videos = self.search_youtube_videos(query, max_results=2)
+                all_videos.extend(videos)
+
+            # Remove duplicates and limit results
+            seen_urls = set()
+            unique_videos = []
+            for video in all_videos:
+                if video["url"] not in seen_urls:
+                    seen_urls.add(video["url"])
+                    unique_videos.append(video)
+                    if len(unique_videos) >= max_results:
+                        break
+
+            logger.info(f"Found {len(unique_videos)} related topic videos for '{topic}'")
+            return unique_videos
+
+        except Exception as e:
+            logger.error(f"Failed to search related topic videos: {str(e)}")
+            return []
+
+    def _search_additional_resources(self, topic: str) -> List[Dict]:
+        """
+        Search for additional resources when primary searches yield limited results
+
+        Args:
+            topic: Learning topic
+
+        Returns:
+            List of additional blog/article resources
+        """
+        try:
+            # Try alternative search queries
+            alternative_queries = [
+                f"{topic} explained",
+                f"{topic} examples",
+                f"{topic} tips and tricks",
+                f"{topic} best practices"
+            ]
+
+            additional_resources = []
+            for query in alternative_queries[:2]:  # Limit to 2 alternative queries
+                search_results = self.search_resources(query, search_type="general")
+
+                if "organic_results" in search_results:
+                    for result in search_results["organic_results"][:2]:  # 2 per query
+                        # Skip if already in main results (basic check)
+                        if not any(res.get("url") == result["url"] for res in additional_resources):
+                            # Quick scrape to get summary
+                            scraped = self.scrape_website(result["url"])
+                            if "error" not in scraped:
+                                summary = self.summarize_with_ollama(
+                                    '\n'.join(scraped.get("paragraphs", [])[:2]),
+                                    prompt_type="key_points"
+                                )
+
+                                additional_resources.append({
+                                    "title": result["title"],
+                                    "url": result["url"],
+                                    "summary": summary,
+                                    "domain": result["domain"],
+                                    "source": "additional_search"
+                                })
+
+            logger.info(f"Found {len(additional_resources)} additional resources for '{topic}'")
+            return additional_resources
+
+        except Exception as e:
+            logger.error(f"Failed to search additional resources: {str(e)}")
+            return []
+
     def _estimate_learning_hours(self, videos: int, docs: int, blogs: int, skill_level: str) -> float:
         """
         Estimate learning hours based on resources and skill level
-        
+
         Rough estimates:
         - Video: 1 hour each
         - Documentation: 0.5 hours each
         - Blog: 0.25 hours each
         """
         hours = (videos * 1.0) + (docs * 0.5) + (blogs * 0.25)
-        
+
         # Adjust by skill level
         if skill_level == "beginner":
             hours *= 1.5  # More time needed
         elif skill_level == "advanced":
             hours *= 0.6  # Less time needed
-        
+
         return round(hours, 1)
 
 

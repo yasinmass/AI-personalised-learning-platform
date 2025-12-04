@@ -343,3 +343,48 @@ class DynamicResourceViewSet(viewsets.ViewSet):
             health_status["services"]["ollama"] = "not running"
         
         return Response(health_status, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods=['get'])
+    def fallback(self, request):
+        """
+        Retrieve a saved roadmap from the database (DB-only fallback).
+        Does NOT attempt dynamic fetching.
+        
+        Query Parameters:
+            topic (required): Learning topic to match against saved Roadmaps
+            skill_level (optional): beginner, intermediate, advanced
+        
+        Returns:
+            Saved roadmap from database or 404 if no match found
+        """
+        topic = request.query_params.get("topic")
+        skill_level = request.query_params.get("skill_level", "beginner")
+        
+        if not topic:
+            return Response(
+                {"error": "topic parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            logger.info(f"Retrieving DB fallback roadmap for '{topic}'")
+            roadmap = self.fetcher._db_fallback_roadmap(topic, skill_level)
+            
+            if roadmap:
+                return Response(roadmap, status=status.HTTP_200_OK)
+            else:
+                return Response(
+                    {
+                        "error": f"No saved roadmap found for topic '{topic}'",
+                        "topic": topic,
+                        "suggestion": "Create a roadmap first or use /fetch_resources/ for dynamic generation"
+                    },
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+        except Exception as e:
+            logger.error(f"Fallback retrieval failed: {str(e)}")
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

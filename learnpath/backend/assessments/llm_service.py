@@ -71,27 +71,42 @@ class LLMService:
             return self._get_fallback_questions(course_title)
     
     def generate_roadmap(self, course_title, course_description, skill_level, duration_weeks):
-        """Generate personalized learning roadmap based on skill level"""
+        """
+        Generate personalized learning roadmap based on skill level
         
-        # Use dynamic mode if enabled
-        if self.use_dynamic_mode:
-            logger.info(f"Generating roadmap using DYNAMIC MODE for '{course_title}'")
-            return self._generate_dynamic_roadmap(course_title, skill_level, duration_weeks)
+        Priority:
+        1. If USE_DYNAMIC_RESOURCES=true, try dynamic (with fallback to static if it fails)
+        2. If USE_DYNAMIC_RESOURCES=false, use static roadmap
+        3. Check DB for saved roadmap
+        4. Use fallback placeholder
+        """
         
-        # Fallback to static roadmap generator
-        logger.info(f"Generating roadmap using STATIC MODE for '{course_title}'")
-        roadmap = self.roadmap_generator.generate_roadmap(
-            course_title, skill_level, duration_weeks
-        )
+        # Prefer static/safe route unless explicitly enabled
+        if not self.use_dynamic_mode:
+            logger.info(f"Dynamic mode disabled. Using static roadmap for '{course_title}'")
+            
+            # Try static generator first
+            roadmap = self.roadmap_generator.generate_roadmap(
+                course_title, skill_level, duration_weeks
+            )
+            if roadmap:
+                return roadmap
+            
+            # Then try DB fallback
+            logger.info(f"Static roadmap not found. Checking DB fallback for '{course_title}'")
+            db_roadmap = self.dynamic_fetcher._db_fallback_roadmap(course_title, skill_level)
+            if db_roadmap:
+                return db_roadmap
+            
+            # Final fallback
+            return self._get_fallback_roadmap(course_title, duration_weeks)
         
-        if roadmap:
-            return roadmap
-        
-        # If both fail, return fallback
-        return self._get_fallback_roadmap(course_title, duration_weeks)
+        # Dynamic mode is explicitly enabled
+        logger.info(f"Dynamic mode enabled. Generating roadmap for '{course_title}'")
+        return self._generate_dynamic_roadmap(course_title, skill_level, duration_weeks)
     
     def _generate_dynamic_roadmap(self, course_title, skill_level, duration_weeks):
-        """Generate roadmap dynamically from real-time resources"""
+        """Generate roadmap dynamically from real-time resources with fallback to static"""
         try:
             logger.info(f"Fetching dynamic resources for '{course_title}'")
             
@@ -100,6 +115,11 @@ class LLMService:
                 course_title,
                 skill_level
             )
+            
+            # Check if dynamic resources have actual content (not just errors)
+            if "error" in dynamic_resources or not dynamic_resources.get("videos"):
+                logger.warning(f"Dynamic resources incomplete for '{course_title}'. Falling back to static.")
+                return self._fallback_to_static_roadmap(course_title, skill_level, duration_weeks)
             
             # Convert dynamic resources to roadmap format
             roadmap = self._convert_dynamic_to_roadmap(
@@ -112,8 +132,22 @@ class LLMService:
             return roadmap
             
         except Exception as e:
-            logger.error(f"Dynamic roadmap generation failed: {str(e)}")
-            return self._get_fallback_roadmap(course_title, duration_weeks)
+            logger.error(f"Dynamic roadmap generation failed: {str(e)}. Falling back to static.")
+            return self._fallback_to_static_roadmap(course_title, skill_level, duration_weeks)
+    
+    def _fallback_to_static_roadmap(self, course_title, skill_level, duration_weeks):
+        """Fallback to static roadmap generator when dynamic fails"""
+        try:
+            logger.info(f"Using static roadmap generator for '{course_title}'")
+            roadmap = self.roadmap_generator.generate_roadmap(
+                course_title, skill_level, duration_weeks
+            )
+            if roadmap:
+                return roadmap
+        except Exception as e:
+            logger.error(f"Static roadmap generation also failed: {str(e)}")
+        
+        return self._get_fallback_roadmap(course_title, duration_weeks)
     
     def _convert_dynamic_to_roadmap(self, dynamic_resources, course_title, skill_level, duration_weeks):
         """Convert dynamic resource structure to roadmap format"""

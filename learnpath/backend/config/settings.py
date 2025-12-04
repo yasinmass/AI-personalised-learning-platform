@@ -136,3 +136,6 @@ OPENAI_MODEL = config('OPENAI_MODEL', default='gpt-4')
 
 # JWT Configuration
 JWT_SECRET = config('JWT_SECRET', default='test-jwt-secret')
+
+
+CORS_ALLOW_ALL_ORIGINS = True

@@ -1,5 +1,6 @@
 import json
 from typing import Dict, List
+from .dynamic_resource_fetcher import DynamicResourceFetcher
 
 class RoadmapGenerator:
     """Generate detailed, personalized learning roadmaps with complete resources"""
@@ -591,6 +592,8 @@ class RoadmapGenerator:
             'slow learner': {'weight': 1.5, 'skip_basics': False, 'extra_resources': True},
             'fast learner': {'weight': 0.4, 'skip_basics': True, 'extra_resources': False},
         }
+        # Initialize dynamic resource fetcher
+        self.resource_fetcher = DynamicResourceFetcher()
     
     def generate_roadmap(self, course_name: str, user_skill_level: str, duration_weeks: int = 12) -> Dict:
         """Generate a comprehensive learning roadmap"""

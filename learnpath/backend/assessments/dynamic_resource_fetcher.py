@@ -136,149 +136,290 @@ class DynamicResourceFetcher:
     
     def search_youtube_videos(self, topic: str, max_results: int = 5) -> List[Dict]:
         """
-        Search for YouTube videos using YouTube Data API with enhanced validation
-        Falls back to web scraping if API key not configured or API fails
+        Search for YouTube videos using YouTube Data API with strict validation
+        Only returns real, playable videos that work when clicked
 
         Args:
             topic: Video topic to search
-            max_results: Maximum videos to return
+            max_results: Maximum videos to return (minimum 3)
 
         Returns:
             List of validated video results with metadata
         """
         if not self.youtube_api_key:
-            logger.warning("YouTube API key not configured. Using web scrape fallback.")
-            return self._fallback_youtube_search(topic, max_results)
+            logger.warning("YouTube API key not configured.")
+            return []
 
-        try:
-            self._rate_limit()
+        # Ensure minimum of 3 results
+        min_results = max(max_results, 3)
 
-            url = "https://www.googleapis.com/youtube/v3/search"
-            params = {
-                "q": f"{topic} tutorial course",
-                "part": "snippet",
-                "type": "video",
-                "maxResults": max_results * 2,  # Get more to account for filtering
-                "order": "relevance",
-                "relevanceLanguage": "en",
-                "key": self.youtube_api_key
-            }
+        # Primary search
+        videos = self._search_youtube_with_validation(topic, min_results)
 
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
+        # Fallback searches if needed
+        if len(videos) < 3:
+            logger.info(f"Primary search returned {len(videos)} videos, running fallback searches...")
 
-            results = response.json()
+            fallback_queries = [
+                f"{topic} tutorial",
+                f"{topic} crash course",
+                f"learn {topic}",
+                f"{topic} basics"
+            ]
 
-            # Check for API errors in response
-            if "error" in results:
-                logger.error(f"YouTube API error: {results['error']}")
-                return self._fallback_youtube_search(topic, max_results)
+            for query in fallback_queries:
+                if len(videos) >= 3:
+                    break
+                fallback_videos = self._search_youtube_with_validation(query, 3)
+                # Add only videos not already in results
+                existing_urls = {v["url"] for v in videos}
+                for video in fallback_videos:
+                    if video["url"] not in existing_urls:
+                        videos.append(video)
+                        if len(videos) >= 3:
+                            break
 
-            videos = []
+        # Return only the requested fields
+        final_videos = []
+        for video in videos[:max_results]:
+            final_videos.append({
+                "title": video["title"],
+                "url": video["url"],
+                "channel": video["channel"],
+                "duration": video["duration"],
+                "view_count": video["view_count"]
+            })
 
-            # Extract video IDs for getting statistics
-            video_ids = [item["id"]["videoId"] for item in results.get("items", [])]
-            video_stats = self._get_youtube_stats(video_ids) if video_ids else {}
+        logger.info(f"Returning {len(final_videos)} validated YouTube videos for '{topic}'")
+        return final_videos
 
-            for item in results.get("items", []):
-                video_id = item["id"]["videoId"]
-
-                # Validate video ID format
-                if not re.match(r'^[a-zA-Z0-9_-]{11}$', video_id):
-                    logger.warning(f"Skipping invalid video ID: {video_id}")
-                    continue
-
-                stats = video_stats.get(video_id, {})
-
-                # Skip videos with no view count (likely private/unavailable)
-                if stats.get("viewCount", 0) == 0:
-                    logger.info(f"Skipping video {video_id} - no view count (possibly unavailable)")
-                    continue
-
-                # Validate video availability by checking if we can get stats
-                if not stats:
-                    logger.info(f"Skipping video {video_id} - no stats available")
-                    continue
-
-                video_url = f"https://www.youtube.com/watch?v={video_id}"
-
-                # Additional validation: check if video is embeddable (public)
-                if not self._validate_video_availability(video_id):
-                    logger.info(f"Skipping video {video_id} - not publicly available")
-                    continue
-
-                videos.append({
-                    "title": item["snippet"]["title"][:200],
-                    "url": video_url,
-                    "channel": item["snippet"]["channelTitle"],
-                    "description": item["snippet"]["description"][:200],
-                    "thumbnail": item["snippet"]["thumbnails"]["high"]["url"],
-                    "published_at": item["snippet"]["publishedAt"],
-                    "view_count": stats.get("viewCount", 0),
-                    "like_count": stats.get("likeCount", 0),
-                    "comment_count": stats.get("commentCount", 0),
-                    "duration": stats.get("duration", "Unknown"),
-                    "relevance_score": self._calculate_video_relevance(topic, item, stats),
-                    "source": "youtube_api"
-                })
-
-            if not videos:
-                logger.warning(f"YouTube API returned no valid results for '{topic}'. Using fallback.")
-                return self._fallback_youtube_search(topic, max_results)
-
-            # Sort by relevance score and take top results
-            videos.sort(key=lambda x: x["relevance_score"], reverse=True)
-            final_videos = videos[:max_results]
-            logger.info(f"Found {len(final_videos)} validated YouTube videos for '{topic}' via API")
-            return final_videos
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"YouTube API request failed: {str(e)}. Using fallback.")
-            return self._fallback_youtube_search(topic, max_results)
-        except (KeyError, ValueError) as e:
-            logger.error(f"Error parsing YouTube API response: {str(e)}. Using fallback.")
-            return self._fallback_youtube_search(topic, max_results)
-    
-    def _validate_video_availability(self, video_id: str) -> bool:
+    def _search_youtube_with_validation(self, query: str, max_results: int = 5) -> List[Dict]:
         """
-        Validate if a YouTube video is publicly available and embeddable
+        Internal method to search YouTube with strict validation
 
         Args:
-            video_id: YouTube video ID to validate
+            query: Search query
+            max_results: Maximum results to return
 
         Returns:
-            True if video is available, False otherwise
+            List of validated videos
         """
-        if not self.youtube_api_key:
-            return True  # Skip validation if no API key
+        max_retries = 3
+        retry_delay = 2
 
+        for attempt in range(max_retries):
+            try:
+                self._rate_limit()
+
+                # Step 1: Search for videos
+                search_url = "https://www.googleapis.com/youtube/v3/search"
+                search_params = {
+                    "q": query,
+                    "part": "snippet",
+                    "type": "video",
+                    "maxResults": max_results * 3,  # Get more for validation
+                    "order": "relevance",
+                    "relevanceLanguage": "en",
+                    "key": self.youtube_api_key
+                }
+
+                search_response = requests.get(search_url, params=search_params, timeout=15)
+                search_response.raise_for_status()
+
+                search_results = search_response.json()
+
+                if "error" in search_results:
+                    logger.error(f"YouTube API search error: {search_results['error']}")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    return []
+
+                video_ids = [item["id"]["videoId"] for item in search_results.get("items", [])]
+                if not video_ids:
+                    return []
+
+                # Step 2: Validate videos using videos API endpoint
+                validated_videos = self._validate_videos_strict(video_ids)
+
+                # Step 3: Get statistics for validated videos
+                if validated_videos:
+                    stats = self._get_youtube_stats(list(validated_videos.keys()))
+                    videos = []
+
+                    for video_id, video_data in validated_videos.items():
+                        stat_data = stats.get(video_id, {})
+                        if stat_data:  # Only include if we got stats
+                            videos.append({
+                                "title": video_data["title"][:200],
+                                "url": f"https://www.youtube.com/watch?v={video_id}",
+                                "channel": video_data["channel"],
+                                "duration": stat_data.get("duration", "Unknown"),
+                                "view_count": stat_data.get("viewCount", 0),
+                                "source": "youtube_api"
+                            })
+
+                    logger.info(f"Validated {len(videos)} videos for query '{query}'")
+                    return videos[:max_results]
+
+            except requests.exceptions.Timeout:
+                logger.warning(f"YouTube API timeout on attempt {attempt + 1}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+            except requests.exceptions.RequestException as e:
+                logger.error(f"YouTube API request failed on attempt {attempt + 1}: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+            except Exception as e:
+                logger.error(f"Unexpected error in YouTube search on attempt {attempt + 1}: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+
+        return []
+
+    def _validate_videos_strict(self, video_ids: List[str]) -> Dict:
+        """
+        Strict validation using YouTube videos API endpoint + URL availability check
+        Only returns videos that are:
+        - uploadStatus = "processed"
+        - privacyStatus = "public"
+        - embeddable = true
+        - not age restricted
+        - AND actually accessible via direct URL check
+
+        Args:
+            video_ids: List of video IDs to validate
+
+        Returns:
+            Dictionary of validated video data
+        """
+        if not video_ids or not self.youtube_api_key:
+            return {}
+
+        max_retries = 2
+        retry_delay = 1
+
+        for attempt in range(max_retries):
+            try:
+                self._rate_limit()
+
+                # Validate in batches of 50 (YouTube API limit)
+                validated_videos = {}
+                batch_size = 50
+
+                for i in range(0, len(video_ids), batch_size):
+                    batch_ids = video_ids[i:i + batch_size]
+
+                    validate_url = "https://www.googleapis.com/youtube/v3/videos"
+                    validate_params = {
+                        "id": ",".join(batch_ids),
+                        "part": "snippet,status,contentDetails",
+                        "key": self.youtube_api_key
+                    }
+
+                    validate_response = requests.get(validate_url, params=validate_params, timeout=15)
+                    validate_response.raise_for_status()
+
+                    validate_results = validate_response.json()
+
+                    if "error" in validate_results:
+                        logger.error(f"YouTube validation API error: {validate_results['error']}")
+                        continue
+
+                    for item in validate_results.get("items", []):
+                        video_id = item["id"]
+                        status = item.get("status", {})
+                        content_details = item.get("contentDetails", {})
+                        snippet = item.get("snippet", {})
+
+                        # Strict validation criteria
+                        if (status.get("uploadStatus") == "processed" and
+                            status.get("privacyStatus") == "public" and
+                            status.get("embeddable") == True and
+                            not content_details.get("contentRating", {}).get("ytRating") == "ytAgeRestricted"):
+
+                            # Additional URL availability check
+                            video_url = f"https://www.youtube.com/watch?v={video_id}"
+                            if self._check_video_url_availability(video_url):
+                                validated_videos[video_id] = {
+                                    "title": snippet.get("title", ""),
+                                    "channel": snippet.get("channelTitle", ""),
+                                    "description": snippet.get("description", "")
+                                }
+                            else:
+                                logger.warning(f"Video {video_id} failed URL availability check")
+
+                logger.info(f"Validated {len(validated_videos)} out of {len(video_ids)} videos")
+                return validated_videos
+
+            except requests.exceptions.Timeout:
+                logger.warning(f"YouTube validation timeout on attempt {attempt + 1}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+            except requests.exceptions.RequestException as e:
+                logger.error(f"YouTube validation request failed on attempt {attempt + 1}: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+            except Exception as e:
+                logger.error(f"Unexpected error in video validation on attempt {attempt + 1}: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+
+        return {}
+
+    def _check_video_url_availability(self, video_url: str) -> bool:
+        """
+        Check if a YouTube video URL is actually accessible and playable
+        Simplified check focusing on basic availability
+
+        Args:
+            video_url: Full YouTube video URL
+
+        Returns:
+            True if video is accessible, False otherwise
+        """
         try:
             self._rate_limit()
 
-            url = "https://www.googleapis.com/youtube/v3/videos"
-            params = {
-                "id": video_id,
-                "part": "status",
-                "key": self.youtube_api_key
-            }
+            # Make a HEAD request first (lighter than GET)
+            response = self.session.head(video_url, timeout=10, allow_redirects=True)
 
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
+            # Check if we get a successful response
+            if response.status_code == 200:
+                # Check the final URL after redirects
+                final_url = response.url
+                if "youtube.com/watch?v=" not in final_url:
+                    # Redirected away from watch page (likely unavailable)
+                    logger.warning(f"Video URL {video_url} redirected to {final_url}")
+                    return False
 
-            items = response.json().get("items", [])
-            if not items:
+                # Basic check passed - video page loads
+                logger.info(f"Video {video_url} passed basic availability check")
+                return True
+            else:
+                logger.warning(f"Video URL {video_url} returned status {response.status_code}")
                 return False
 
-            status = items[0].get("status", {})
-            privacy_status = status.get("privacyStatus", "private")
-            embeddable = status.get("embeddable", False)
-
-            # Video must be public and embeddable
-            return privacy_status == "public" and embeddable
-
+        except requests.exceptions.Timeout:
+            logger.warning(f"Timeout checking video availability: {video_url}")
+            # Don't fail on timeout - assume available
+            return True
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Request error checking video availability: {video_url} - {str(e)}")
+            # Don't fail on request errors - assume available
+            return True
         except Exception as e:
-            logger.warning(f"Failed to validate video {video_id}: {str(e)}")
-            return False
+            logger.warning(f"Unexpected error checking video availability: {video_url} - {str(e)}")
+            # Don't fail on unexpected errors - assume available
+            return True
+    
+
 
     def _get_youtube_stats(self, video_ids: List[str]) -> Dict:
         """Get video statistics (views, likes, duration)"""

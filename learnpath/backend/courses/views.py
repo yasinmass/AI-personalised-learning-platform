@@ -11,7 +11,7 @@ from .serializers import CourseSerializer, UserCourseSerializer
 def list_courses(request):
     """List all available courses"""
     courses = Course.objects.all()
-    serializer = CourseSerializer(courses, many=True)
+    serializer = CourseSerializer(courses, many=True, context={'request': request})
     return Response(serializer.data, status=status.HTTP_200_OK)
 
 @api_view(['GET'])

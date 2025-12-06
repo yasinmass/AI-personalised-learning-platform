@@ -43,3 +43,19 @@ class UserCourse(models.Model):
 
     def __str__(self):
         return f"{self.user.user.email} - {self.course.title}"
+
+
+class CourseVideo(models.Model):
+    """Admin-managed video resources for courses and topics"""
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='videos')
+    topic = models.CharField(max_length=200, blank=True, null=True, help_text='Optional topic/tag for this video')
+    title = models.CharField(max_length=300)
+    url = models.URLField()
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.course.title} - {self.title}"

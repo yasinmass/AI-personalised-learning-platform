@@ -595,8 +595,16 @@ class RoadmapGenerator:
         # Initialize dynamic resource fetcher
         self.resource_fetcher = DynamicResourceFetcher()
     
-    def generate_roadmap(self, course_name: str, user_skill_level: str, duration_weeks: int = 12) -> Dict:
-        """Generate a comprehensive learning roadmap"""
+    def generate_roadmap(self, course_name: str, user_skill_level: str, duration_weeks: int = 12, user_answers: Dict = None) -> Dict:
+        """
+        Generate a comprehensive learning roadmap personalized with user answers
+        
+        Args:
+            course_name: Name of the course
+            user_skill_level: User's skill level (beginner, intermediate, advanced)
+            duration_weeks: Desired duration in weeks
+            user_answers: Dictionary of user's assessment answers for personalization
+        """
         
         # Get base roadmap
         if course_name not in self.ROADMAPS:
@@ -605,22 +613,24 @@ class RoadmapGenerator:
         roadmap_data = self.ROADMAPS[course_name]
         skill_config = self.skill_levels.get(user_skill_level.lower(), self.skill_levels['beginner'])
         
-        # Process roadmap based on skill level
+        # Process roadmap based on skill level and user answers
         processed_roadmap = self._process_roadmap_by_skill_level(
             roadmap_data,
             user_skill_level,
             duration_weeks,
-            skill_config
+            skill_config,
+            user_answers=user_answers
         )
         
         return processed_roadmap
     
-    def _process_roadmap_by_skill_level(self, roadmap, skill_level, duration_weeks, config):
-        """Customize roadmap based on skill level and duration"""
+    def _process_roadmap_by_skill_level(self, roadmap, skill_level, duration_weeks, config, user_answers=None):
+        """Customize roadmap based on skill level, duration, and user answers"""
         processed = {
             'course_name': roadmap.get('name', 'Course'),
             'skill_level': skill_level,
             'duration_weeks': duration_weeks,
+            'user_answers_integrated': bool(user_answers),
             'modules': []
         }
         
@@ -637,7 +647,8 @@ class RoadmapGenerator:
                 'module_number': module['module_number'],
                 'name': module['name'],
                 'description': module['description'],
-                'topics': []
+                'topics': [],
+                'personalized': bool(user_answers)  # Mark as personalized if user answers provided
             }
             
             for topic in module['topics']:
@@ -651,7 +662,8 @@ class RoadmapGenerator:
                     'official_docs': topic['official_docs'],
                     'tools': topic['tools'][:4],
                     'summary': topic['summary'],
-                    'assignments': topic['assignments'][:3]
+                    'assignments': topic['assignments'][:3],
+                    'personalized_for_user': bool(user_answers)  # Mark topics as personalized
                 }
                 
                 processed_module['topics'].append(processed_topic)

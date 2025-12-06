@@ -12,6 +12,8 @@ class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     learning_duration_preference = models.IntegerField(default=12, help_text="Duration in weeks")
     total_learning_hours = models.IntegerField(default=0)
+    # Comma-separated assigned topics for the user (admin assigns topics)
+    assigned_topics = models.CharField(max_length=500, blank=True, default='', help_text='Comma-separated topics assigned by admin')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

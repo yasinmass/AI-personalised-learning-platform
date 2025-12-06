@@ -822,24 +822,26 @@ class DynamicResourceFetcher:
             logger.warning(f"Exception while attempting DB fallback: {e}")
             return None
     
-    def get_complete_roadmap(self, topic: str, skill_level: str = "beginner") -> Dict:
+    def get_complete_roadmap(self, topic: str, skill_level: str = "beginner", user_answers: dict = None) -> Dict:
         """
         Dynamic pipeline: Adaptive Search → Scrape → Rank → Summarize → Return
-        Adapts search strategy based on resource availability
+        Adapts search strategy based on resource availability and personalization
 
         Args:
             topic: Learning topic
             skill_level: "beginner", "intermediate", "advanced"
+            user_answers: User's assessment answers for personalized resource ranking
 
         Returns:
             Complete learning roadmap with all resources
         """
-        logger.info(f"Generating dynamic roadmap for '{topic}' ({skill_level})")
+        logger.info(f"Generating dynamic roadmap for '{topic}' ({skill_level}) with {'personalization' if user_answers else 'default ranking'}")
 
         try:
             roadmap = {
                 "topic": topic,
                 "skill_level": skill_level,
+                "personalized": bool(user_answers),
                 "generated_at": datetime.now().isoformat(),
                 "videos": [],
                 "documentation": [],
@@ -850,6 +852,59 @@ class DynamicResourceFetcher:
                 "estimated_hours": 0,
                 "errors": []
             }
+
+            # First, prefer admin-provided static videos stored in DB (CourseVideo)
+            try:
+                from courses.models import CourseVideo
+                # If user provided weak topics, try to match them first
+                matched_videos = []
+                if user_answers:
+                    # Attempt to identify weak topics from user_answers (simple heuristic)
+                    weak_topics = []
+                    # If user_answers is a dict of question idx -> answer, we can't map yet
+                    # but if it's a list of topic strings, use them
+                    if isinstance(user_answers, (list, tuple)):
+                        weak_topics = user_answers
+                    elif isinstance(user_answers, dict):
+                        # placeholder: could be expanded to map question indices to topics
+                        weak_topics = []
+
+                    for wt in weak_topics:
+                        qset = CourseVideo.objects.filter(is_active=True, topic__icontains=wt)
+                        for v in qset:
+                            matched_videos.append({
+                                'title': v.title,
+                                'url': v.url,
+                                'channel': '',
+                                'duration': 'Unknown',
+                                'source': 'admin'
+                            })
+
+                # If no weak-topic matches, fallback to any active video for the course title
+                if not matched_videos:
+                    qset2 = CourseVideo.objects.filter(is_active=True, course__title__icontains=topic)
+                    for v in qset2:
+                        matched_videos.append({
+                            'title': v.title,
+                            'url': v.url,
+                            'channel': '',
+                            'duration': 'Unknown',
+                            'source': 'admin'
+                        })
+
+                if matched_videos:
+                    # Attach admin-provided videos but do NOT return early.
+                    # We want LLM-generated chapters/topics to still be created
+                    # and have these admin videos attached to matching topics.
+                    roadmap['videos'] = matched_videos[:5]
+                    roadmap['admin_videos_used'] = True
+                    roadmap['admin_videos_count'] = len(matched_videos)
+                    # Append to summary rather than replacing it
+                    existing_summary = roadmap.get('summary', '') or ''
+                    roadmap['summary'] = (existing_summary + ' ').strip() + f"Admin-provided videos available for {topic}."
+                    logger.info(f"Attached {len(matched_videos)} admin videos for '{topic}' and will continue dynamic enrichment")
+            except Exception as e:
+                logger.debug(f"No admin videos available or DB error: {e}")
 
             # Dynamic search strategy based on resource availability
             search_strategy = self._determine_search_strategy(topic)

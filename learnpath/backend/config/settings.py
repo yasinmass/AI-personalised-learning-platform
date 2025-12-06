@@ -130,6 +130,17 @@ CORS_ALLOWED_ORIGINS = [
 
 CORS_ALLOW_CREDENTIALS = True
 
+# Explicitly allow common headers including Authorization for browser requests
+from corsheaders.defaults import default_headers, default_methods
+
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'Authorization',
+    'Cache-Control',
+    'Pragma',
+]
+
+CORS_ALLOW_METHODS = list(default_methods)
+
 # OpenAI Configuration
 OPENAI_API_KEY = config('OPENAI_API_KEY', default='')
 OPENAI_MODEL = config('OPENAI_MODEL', default='gpt-4')

@@ -68,6 +68,52 @@ def login(request):
     
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def admin_login(request):
+    """Admin login endpoint - only allows staff/superuser accounts"""
+    serializer = LoginSerializer(data=request.data)
+    if serializer.is_valid():
+        email = serializer.validated_data['email']
+        password = serializer.validated_data['password']
+
+        try:
+            user = User.objects.get(email=email)
+            if not (user.is_staff or user.is_superuser):
+                return Response({'error': 'Not an admin account'}, status=status.HTTP_403_FORBIDDEN)
+
+            user_auth = authenticate(username=user.username, password=password)
+            if user_auth:
+                # Generate JWT token
+                payload = {
+                    'user_id': user.id,
+                    'email': user.email,
+                    'exp': datetime.utcnow() + timedelta(days=30),
+                    'iat': datetime.utcnow()
+                }
+                token = jwt.encode(payload, settings.JWT_SECRET, algorithm='HS256')
+
+                return Response({
+                    'message': 'Admin login successful',
+                    'token': token,
+                    'user': {
+                        'id': user.id,
+                        'email': user.email,
+                        'username': user.username,
+                        'first_name': user.first_name,
+                        'last_name': user.last_name,
+                        'is_staff': user.is_staff,
+                        'is_superuser': user.is_superuser
+                    }
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({'error': 'Invalid password'}, status=status.HTTP_401_UNAUTHORIZED)
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_profile(request):

@@ -12,7 +12,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = UserProfile
-        fields = ('id', 'user', 'learning_duration_preference', 'total_learning_hours', 'created_at', 'updated_at')
+        fields = ('id', 'user', 'learning_duration_preference', 'total_learning_hours', 'assigned_topics', 'created_at', 'updated_at')
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=6)

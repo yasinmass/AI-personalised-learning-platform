@@ -162,5 +162,16 @@ class APIClient {
     }
 }
 
-// Create global API client instance
-const api = new APIClient('http://localhost:8000/api');
+// Create global API client instance. Prefer `window.API_BASE_URL` (set by app.js)
+// to avoid redeclaring globals when both scripts are loaded. Fall back to
+// a sensible localhost host for development.
+const _base = (typeof window !== 'undefined' && window.API_BASE_URL)
+    ? window.API_BASE_URL
+    : (function(){
+        const host = (typeof window !== 'undefined') ? window.location.hostname : '127.0.0.1';
+        const scheme = (typeof window !== 'undefined' && window.location.protocol) ? window.location.protocol : 'http:';
+        const resolvedHost = (host === 'localhost' || host === '127.0.0.1') ? `${scheme}//127.0.0.1:8000` : (typeof window !== 'undefined' ? window.location.origin : `${scheme}//127.0.0.1:8000`);
+        return `${resolvedHost}/api`;
+    })();
+
+const api = new APIClient(_base);

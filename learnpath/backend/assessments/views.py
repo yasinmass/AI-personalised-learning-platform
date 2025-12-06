@@ -7,6 +7,9 @@ from users.models import UserProfile
 from .models import Assessment, Roadmap
 from .serializers import AssessmentDetailSerializer, RoadmapSerializer
 from .llm_service import LLMService
+from django.conf import settings
+import concurrent.futures
+import threading
 
 llm_service = LLMService()
 
@@ -103,25 +106,116 @@ def generate_roadmap(request):
     """Generate personalized roadmap based on assessment"""
     assessment_id = request.data.get('assessment_id')
     duration_weeks = request.data.get('duration_weeks', 12)
+    user_answers = request.data.get('user_answers', {})
     
     try:
         assessment = Assessment.objects.get(id=assessment_id, user__user=request.user)
         course = assessment.course
         user_profile = assessment.user
         
+        # Determine assigned topics for this user (admin-assigned)
+        assigned_topics_list = []
+        try:
+            profile_obj = UserProfile.objects.get(user=request.user)
+            assigned_raw = (profile_obj.assigned_topics or '').strip()
+            if assigned_raw:
+                assigned_topics_list = [t.strip() for t in assigned_raw.split(',') if t.strip()]
+        except Exception:
+            assigned_topics_list = []
+
         # Check if roadmap already exists
         existing_roadmap = Roadmap.objects.filter(assessment=assessment).first()
         if existing_roadmap:
             serializer = RoadmapSerializer(existing_roadmap)
             return Response(serializer.data, status=status.HTTP_200_OK)
-        
-        # Generate roadmap using LLM - pass skill_level from assessment
-        roadmap_data = llm_service.generate_roadmap(
-            course.title,
-            course.description,
-            assessment.skill_level,  # Use skill_level from assessment
-            duration_weeks
-        )
+        # Attempt dynamic LLM-based generation (do this even in DEBUG so developers
+        # can see dynamic output). Force the llm_service into dynamic mode for
+        # this call to ensure live resources are used. If dynamic generation
+        # fails or times out, a quick fallback roadmap will be used.
+        try:
+            llm_service.use_dynamic_mode = True
+        except Exception:
+            pass
+
+        def _generate():
+            # Prefer assigned topics or user answers for personalization
+            personalization_input = user_answers or assigned_topics_list or None
+            return llm_service.generate_roadmap(
+                course.title,
+                course.description,
+                assessment.skill_level,
+                duration_weeks,
+                user_answers=personalization_input,
+                course_data=assessment.questions_data
+            )
+
+        roadmap_data = None
+        # Use a thread pool to limit blocking time
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_generate)
+            try:
+                # Wait up to 10 seconds for dynamic generation (keep below client timeout)
+                roadmap_data = future.result(timeout=10)
+            except concurrent.futures.TimeoutError:
+                # Dynamic generation timed out — return a lightweight quick fallback roadmap
+                roadmap_data = {
+                    "chapters": [
+                        {
+                            "chapter_number": 1,
+                            "title": f"Introduction to {course.title}",
+                            "duration_hours": max(1, int(duration_weeks * 0.1)),
+                            "topics": [course.title],
+                            "learning_resources": [],
+                            "checkpoint": "Start learning",
+                            "prerequisites": [],
+                            "personalized_for_skill_level": assessment.skill_level
+                        }
+                    ],
+                    "total_duration_hours": max(1, int(duration_weeks * 2)),
+                    "summary": f"Quick starter roadmap for {course.title}",
+                    "skill_level": assessment.skill_level,
+                    "weak_topics": [],
+                    "user_answers_integrated": False,
+                    "related_topics": [],
+                    "generated_from": "quick_fallback",
+                    "is_dynamic": False
+                }
+            except Exception as e:
+                # Unexpected error from generation — try static fallback
+                try:
+                    roadmap_data = llm_service._fallback_to_static_roadmap(
+                        course.title,
+                        assessment.skill_level,
+                        duration_weeks,
+                        user_answers=user_answers
+                    )
+                except Exception:
+                    roadmap_data = None
+
+        # Ensure roadmap_data is always a dict before saving
+        if not isinstance(roadmap_data, dict):
+            roadmap_data = {
+                "chapters": [
+                    {
+                        "chapter_number": 1,
+                        "title": f"Introduction to {course.title}",
+                        "duration_hours": max(1, int(duration_weeks * 0.1)),
+                        "topics": [course.title],
+                        "learning_resources": [],
+                        "checkpoint": "Start learning",
+                        "prerequisites": [],
+                        "personalized_for_skill_level": assessment.skill_level
+                    }
+                ],
+                "total_duration_hours": max(1, int(duration_weeks * 2)),
+                "summary": f"Quick starter roadmap for {course.title}",
+                "skill_level": assessment.skill_level,
+                "weak_topics": [],
+                "user_answers_integrated": False,
+                "related_topics": [],
+                "generated_from": "quick_fallback",
+                "is_dynamic": False
+            }
         
         # Create roadmap record
         roadmap = Roadmap.objects.create(
